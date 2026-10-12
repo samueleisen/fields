@@ -16,8 +16,8 @@ const { scene, camera, renderer, horizonFog } = createScene();
 // 2. Setup Lighting (Sun, Hemisphere, Ambient)
 const lighting = createLighting(scene);
 
-// 3. Create Static Wavy Terrain
-const { material: terrainMaterial } = createTerrain(scene);
+// 3. Create Static Wavy Terrain with Stylized Wind Wave Shader
+const terrain = createTerrain(scene);
 
 // 4. Create Vertical Capsule Player
 const player = createPlayer(scene);
@@ -29,7 +29,7 @@ const { controls, resetCameraView } = createControls(camera, renderer.domElement
 const playerMovement = setupPlayerMovement(player, camera, controls);
 
 // 7. Bind UI Dock Handlers
-setupUI({ scene, horizonFog, terrainMaterial, resetCameraView });
+setupUI({ scene, horizonFog, terrainMaterial: terrain.material, resetCameraView });
 
 // 8. 60 FPS Render Loop
 const clock = new THREE.Clock();
@@ -38,6 +38,12 @@ function animate() {
   requestAnimationFrame(animate);
 
   const delta = Math.min(clock.getDelta(), 0.1);
+  const elapsedTime = clock.getElapsedTime();
+
+  // Update wind propagation wave time uniform
+  if (terrain.windUniforms) {
+    terrain.windUniforms.uTime.value = elapsedTime;
+  }
 
   // Update player movement and camera tracking
   playerMovement.update(delta);
@@ -54,7 +60,7 @@ animate();
 
 // Expose game instance for testing and debugging
 if (typeof window !== 'undefined') {
-  window.game = { player, controls, camera, playerMovement, getTerrainHeight, lighting };
+  window.game = { player, controls, camera, playerMovement, getTerrainHeight, lighting, terrain };
 }
 
 // Export player and elevation helper for modular extension
