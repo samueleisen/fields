@@ -14,7 +14,7 @@ import { setupUI } from './js/ui.js';
 const { scene, camera, renderer, horizonFog } = createScene();
 
 // 2. Setup Lighting (Sun, Hemisphere, Ambient)
-createLighting(scene);
+const lighting = createLighting(scene);
 
 // 3. Create Static Wavy Terrain
 const { material: terrainMaterial } = createTerrain(scene);
@@ -42,6 +42,9 @@ function animate() {
   // Update player movement and camera tracking
   playerMovement.update(delta);
 
+  // Update sun light & shadow map frustum to follow the player
+  lighting.update(player.group.position);
+
   // Update orbit camera controls
   controls.update();
 
@@ -51,7 +54,7 @@ animate();
 
 // Expose game instance for testing and debugging
 if (typeof window !== 'undefined') {
-  window.game = { player, controls, camera, playerMovement, getTerrainHeight };
+  window.game = { player, controls, camera, playerMovement, getTerrainHeight, lighting };
 }
 
 // Export player and elevation helper for modular extension
