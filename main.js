@@ -6,6 +6,7 @@ import { createScene } from './js/scene.js';
 import { createLighting } from './js/lighting.js';
 import { createTerrain, getTerrainHeight } from './js/terrain.js';
 import { createPlayer } from './js/player.js';
+import { createGrass } from './js/grass.js';
 import { createControls } from './js/controls.js';
 import { setupPlayerMovement } from './js/movement.js';
 import { setupUI } from './js/ui.js';
@@ -19,7 +20,10 @@ const lighting = createLighting(scene);
 // 3. Create Static Wavy Terrain with Stylized Wind Wave Shader
 const terrain = createTerrain(scene);
 
-// 4. Create Vertical Capsule Player
+// 4. Create Spaced 2-Unit 3D Pole Grass Field with GPU Wind Bending
+const grass = createGrass(scene, terrain.windUniforms);
+
+// 5. Create Vertical Capsule Player
 const player = createPlayer(scene);
 
 // 5. Setup Camera & Orbit Controls (Tracking Player)
@@ -60,8 +64,8 @@ animate();
 
 // Expose game instance for testing and debugging
 if (typeof window !== 'undefined') {
-  window.game = { player, controls, camera, playerMovement, getTerrainHeight, lighting, terrain };
+  window.game = { player, controls, camera, playerMovement, getTerrainHeight, lighting, terrain, grass };
 }
 
-// Export player and elevation helper for modular extension
-export { player, getTerrainHeight, playerMovement };
+// Export player, grass and elevation helper for modular extension
+export { player, grass, getTerrainHeight, playerMovement };
