@@ -4,7 +4,7 @@ import { getTerrainHeight } from './terrain.js';
 // ============================================================================
 // Spaced 2-Unit 3D Pole Grass Field with GPU Wind Bending
 // ============================================================================
-export function createGrass(scene, windUniforms) {
+export function createGrass(scene, worldWind) {
   const POLE_HEIGHT = 2.0;
   const POLE_RADIUS_BOTTOM = 0.07;
   const POLE_RADIUS_TOP = 0.015;
@@ -29,91 +29,69 @@ export function createGrass(scene, windUniforms) {
     flatShading: false
   });
 
-  // 3. GPU Vertex Shader Bending + Propagation Front
-  poleMaterial.onBeforeCompile = (shader) => {
-    // Share exact same wind uniforms from terrain
-    shader.uniforms.uTime = windUniforms.uTime;
-    shader.uniforms.uWindDirection = windUniforms.uWindDirection;
-    shader.uniforms.uWindSpeed = windUniforms.uWindSpeed;
-    shader.uniforms.uGustColor = windUniforms.uGustColor;
+  // 3. GPU Vertex Shader Bending via World Wind System
+  if (worldWind) {
+    poleMaterial.onBeforeCompile = (shader) => {
+      worldWind.applyToShader(shader);
 
-    // Inject varying and uniforms into vertex shader
-    shader.vertexShader = shader.vertexShader.replace(
-      '#include <common>',
-      `
-      #include <common>
-      varying float vPoleGustFactor;
-      uniform float uTime;
-      uniform vec2 uWindDirection;
-      uniform float uWindSpeed;
-      uniform vec3 uGustColor;
-      `
-    );
+      // Inject varying and World Wind GLSL chunk into vertex shader
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <common>',
+        `
+        #include <common>
+        varying float vPoleGustFactor;
+        ${worldWind.glslChunk}
+        `
+      );
 
-    // Apply quadratic bending rooted at base (y=0) and deflected along wind propagation front
-    shader.vertexShader = shader.vertexShader.replace(
-      '#include <begin_vertex>',
-      `
-      #include <begin_vertex>
+      // Sample World Wind and apply cantilever bending + arc length conservation
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `
+        #include <begin_vertex>
 
-      #ifdef USE_INSTANCING
-        vec3 instanceRootPos = instanceMatrix[3].xyz;
-      #else
-        vec3 instanceRootPos = vec3(0.0);
-      #endif
+        #ifdef USE_INSTANCING
+          vec3 instanceRootPos = instanceMatrix[3].xyz;
+        #else
+          vec3 instanceRootPos = vec3(0.0);
+        #endif
 
-      // Height factor along pole (0.0 at base root, 1.0 at tip)
-      float h = clamp(position.y / ${POLE_HEIGHT.toFixed(1)}, 0.0, 1.0);
-      float bendCurve = h * h; // Quadratic bend: base stays anchored, tip deflects smoothly
+        // Height factor along pole (0.0 at base root, 1.0 at tip)
+        float h = clamp(position.y / ${POLE_HEIGHT.toFixed(1)}, 0.0, 1.0);
 
-      // Sample traveling wind propagation front at this pole's instance location
-      float windDist = dot(instanceRootPos.xz, uWindDirection) - uTime * uWindSpeed;
+        // Sample centralized world wind system (incorporating idle rustle + gust wave)
+        WorldWindSample wind = sampleWorldWind(instanceRootPos.xz, uWorldWindTime, h);
 
-      // Harmonic waves forming the propagating wind front ribbons
-      float waveMain = sin(windDist * 0.05);
-      float waveMid  = sin(windDist * 0.11 + instanceRootPos.x * 0.02);
-      float waveFine = sin(windDist * 0.22 - instanceRootPos.z * 0.018);
+        // Deflect the pole along the traveling wind direction vector
+        transformed.xz += wind.direction * (wind.totalBend * 0.85);
 
-      float ribbon1 = pow(clamp(waveMain * 0.5 + 0.5, 0.0, 1.0), 3.0);
-      float ribbon2 = pow(clamp(waveMid  * 0.5 + 0.5, 0.0, 1.0), 4.0);
-      float ribbon3 = pow(clamp(waveFine * 0.5 + 0.5, 0.0, 1.0), 5.0);
+        // Arc downward to maintain physical pole stalk length
+        transformed.y  -= (wind.totalBend * wind.totalBend) * 0.28;
 
-      float combinedFront = ribbon1 * 0.65 + ribbon2 * 0.38 + ribbon3 * 0.25;
-      float gustMask = smoothstep(0.22, 0.65, combinedFront);
+        // Pass gust factor to fragment shader for tip illumination
+        vPoleGustFactor = wind.gustMask * h;
+        `
+      );
 
-      // Idle gentle rustle + energetic gust deflection
-      float idleRustle = sin(uTime * 3.2 + instanceRootPos.x * 0.45 + instanceRootPos.z * 0.35) * 0.12;
-      float totalBend = (idleRustle + gustMask * 1.15) * bendCurve;
+      // Fragment Shader: highlight the bent tips as the glowing gust sweeps through
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <common>',
+        `
+        #include <common>
+        varying float vPoleGustFactor;
+        ${worldWind.glslPars}
+        `
+      );
 
-      // Deflect the pole along the traveling wind direction vector
-      transformed.xz += uWindDirection * (totalBend * 0.85);
-
-      // Arc downward to maintain physical pole stalk length
-      transformed.y  -= (totalBend * totalBend) * 0.28;
-
-      // Pass gust factor to fragment shader for tip illumination
-      vPoleGustFactor = gustMask * h;
-      `
-    );
-
-    // Fragment Shader: highlight the bent tips as the glowing gust sweeps through
-    shader.fragmentShader = shader.fragmentShader.replace(
-      '#include <common>',
-      `
-      #include <common>
-      varying float vPoleGustFactor;
-      uniform vec3 uGustColor;
-      `
-    );
-
-    shader.fragmentShader = shader.fragmentShader.replace(
-      '#include <color_fragment>',
-      `
-      #include <color_fragment>
-      diffuseColor.rgb = mix(diffuseColor.rgb, uGustColor, vPoleGustFactor * 0.65);
-      `
-    );
-  };
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `
+        #include <color_fragment>
+        diffuseColor.rgb = mix(diffuseColor.rgb, uWorldWindGustColor, vPoleGustFactor * 0.65);
+        `
+      );
+    };
+  }
 
   // 4. Generate Spaced Test Grid of Poles around Center Origin
   const FIELD_RADIUS = 35.0;

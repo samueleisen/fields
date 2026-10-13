@@ -18,7 +18,7 @@ export function getTerrainHeight(x, z) {
   return w1 + w2 + w3 + horizonCurve;
 }
 
-export function createTerrain(scene) {
+export function createTerrain(scene, worldWind) {
   const terrainGeometry = new THREE.PlaneGeometry(
     TERRAIN_SIZE,
     TERRAIN_SIZE,
@@ -45,79 +45,48 @@ export function createTerrain(scene) {
     flatShading: false
   });
 
-  // Wind Propagation Wave Uniforms (Option B: Stylized Ribbon / Ghibli Gust)
-  const windUniforms = {
-    uTime: { value: 0 },
-    uWindDirection: { value: new THREE.Vector2(0.707, 0.707).normalize() },
-    uWindSpeed: { value: 24.0 }, // Gust travel speed across hills
-    uGustColor: { value: new THREE.Color(0x94f250) } // Glowing sunlit lime-green wave crest
-  };
+  // World Wind Shader Integration (Option B: Stylized Ribbon / Ghibli Gust)
+  if (worldWind) {
+    terrainMaterial.onBeforeCompile = (shader) => {
+      worldWind.applyToShader(shader);
 
-  terrainMaterial.onBeforeCompile = (shader) => {
-    shader.uniforms.uTime = windUniforms.uTime;
-    shader.uniforms.uWindDirection = windUniforms.uWindDirection;
-    shader.uniforms.uWindSpeed = windUniforms.uWindSpeed;
-    shader.uniforms.uGustColor = windUniforms.uGustColor;
+      // 1. Pass world position from vertex to fragment shader
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <common>',
+        `
+        #include <common>
+        varying vec3 vTerrainWorldPos;
+        `
+      );
 
-    // 1. Pass world position from vertex to fragment shader
-    shader.vertexShader = shader.vertexShader.replace(
-      '#include <common>',
-      `
-      #include <common>
-      varying vec3 vTerrainWorldPos;
-      `
-    );
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <worldpos_vertex>',
+        `
+        #include <worldpos_vertex>
+        vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        `
+      );
 
-    shader.vertexShader = shader.vertexShader.replace(
-      '#include <worldpos_vertex>',
-      `
-      #include <worldpos_vertex>
-      vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-      `
-    );
+      // 2. In fragment shader, sample the centralized world wind wave front
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <common>',
+        `
+        #include <common>
+        varying vec3 vTerrainWorldPos;
+        ${worldWind.glslChunk}
+        `
+      );
 
-    // 2. In fragment shader, calculate the traveling propagation front
-    shader.fragmentShader = shader.fragmentShader.replace(
-      '#include <common>',
-      `
-      #include <common>
-      varying vec3 vTerrainWorldPos;
-      uniform float uTime;
-      uniform vec2 uWindDirection;
-      uniform float uWindSpeed;
-      uniform vec3 uGustColor;
-      `
-    );
-
-    shader.fragmentShader = shader.fragmentShader.replace(
-      '#include <color_fragment>',
-      `
-      #include <color_fragment>
-
-      // Coordinate advancing along the wind direction vector
-      float windDist = dot(vTerrainWorldPos.xz, uWindDirection) - uTime * uWindSpeed;
-
-      // Stylized Ghibli Ribbon Waves:
-      // Primary sweeping gust wave (frequent enough to always see in both foreground & hills)
-      float waveMain = sin(windDist * 0.05);
-      // Harmonic undulating ripples
-      float waveMid  = sin(windDist * 0.11 + vTerrainWorldPos.x * 0.02);
-      float waveFine = sin(windDist * 0.22 - vTerrainWorldPos.z * 0.018);
-
-      // Shape waves into sharp, glowing ribbons with distinct leading crests
-      float ribbon1 = pow(clamp(waveMain * 0.5 + 0.5, 0.0, 1.0), 3.0);
-      float ribbon2 = pow(clamp(waveMid  * 0.5 + 0.5, 0.0, 1.0), 4.0);
-      float ribbon3 = pow(clamp(waveFine * 0.5 + 0.5, 0.0, 1.0), 5.0);
-
-      // Layered propagating front with crisp threshold
-      float combinedFront = ribbon1 * 0.65 + ribbon2 * 0.38 + ribbon3 * 0.25;
-      float gustMask = smoothstep(0.22, 0.65, combinedFront);
-
-      // Blend base grass color with glowing sunlit gust ribbon
-      diffuseColor.rgb = mix(diffuseColor.rgb, uGustColor, gustMask * 0.85);
-      `
-    );
-  };
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        `
+        #include <color_fragment>
+        WorldWindSample windSample = sampleWorldWind(vTerrainWorldPos.xz, uWorldWindTime, 0.0);
+        diffuseColor.rgb = mix(diffuseColor.rgb, windSample.gustColor, windSample.gustMask * 0.85);
+        `
+      );
+    };
+  }
 
   const terrainMesh = new THREE.Mesh(terrainGeometry, terrainMaterial);
   terrainMesh.receiveShadow = true;
@@ -137,5 +106,9 @@ export function createTerrain(scene) {
   groundBaseMesh.position.y = -3;
   scene.add(groundBaseMesh);
 
-  return { mesh: terrainMesh, material: terrainMaterial, windUniforms };
+  return {
+    mesh: terrainMesh,
+    material: terrainMaterial,
+    windUniforms: worldWind ? worldWind.uniforms : null
+  };
 }
