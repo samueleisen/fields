@@ -35,66 +35,150 @@ export function createGrass(scene, worldWind) {
     flatShading: false
   });
 
-  // GPU Vertex Shader Bending via World Wind System on Generation 1
-  if (worldWind) {
-    poleMaterialGen1.onBeforeCompile = (shader) => {
+  // ==========================================================================
+  // Generation 1 Dynamic Player Collision Uniforms (0.00ms CPU overhead)
+  // ==========================================================================
+  const collisionUniforms = {
+    uPlayerPosition: { value: new THREE.Vector3(0, 0, 0) },
+    uCollisionRadius: { value: 1.5 },
+    uCollisionStrength: { value: 1.35 }
+  };
+
+  // Shared GLSL uniform declarations for Gen 1 hero foliage
+  const collisionParsGLSL = /* glsl */ `
+    uniform vec3  uPlayerPosition;
+    uniform float uCollisionRadius;
+    uniform float uCollisionStrength;
+  `;
+
+  // Shared vertex displacement chunk: combined World Wind + Player Trampling/Parting
+  const gen1VertexBendingGLSL = /* glsl */ `
+    #include <begin_vertex>
+
+    #ifdef USE_INSTANCING
+      vec3 instanceRootPos = instanceMatrix[3].xyz;
+    #else
+      vec3 instanceRootPos = vec3(0.0);
+    #endif
+
+    // Height factor along pole (0.0 at base root in soil, 1.0 at tip)
+    float h = clamp(position.y / ${POLE_HEIGHT.toFixed(1)}, 0.0, 1.0);
+
+    // 1. Environmental World Wind Deflection (cantilever bend)
+    ${worldWind ? `
+    WorldWindSample wind = sampleWorldWind(instanceRootPos.xz, uWorldWindTime, h);
+    vec2 windDeflection = wind.direction * (wind.totalBend * 0.85);
+    ` : `
+    vec2 windDeflection = vec2(0.0);
+    `}
+
+    // 2. Dynamic Player Capsule Trampling / Parting Collision
+    vec2 toBlade = instanceRootPos.xz - uPlayerPosition.xz;
+    float distToPlayer = length(toBlade);
+
+    // Radial push direction pointing outward away from player footprint
+    vec2 pushDir = distToPlayer > 0.001 ? toBlade / distToPlayer : vec2(0.0, 1.0);
+
+    // Interaction envelope: smooth falloff up to uCollisionRadius (1.5m)
+    // Blades directly under player boots (dist < 0.25) receive full push (1.0)
+    float pushMask = 1.0 - smoothstep(0.25, uCollisionRadius, distToPlayer);
+
+    // Vertical proximity check: ensure player is near the ground level of this blade
+    // Capsule center is at ground + 1.4m. Foot level is center - 1.4m.
+    float footElevation = uPlayerPosition.y - 1.4;
+    float vertDist = abs(instanceRootPos.y - footElevation);
+    float vertMask = 1.0 - smoothstep(1.2, 2.4, vertDist);
+    pushMask *= vertMask;
+
+    // Root is anchored at soil (h = 0.0 -> push = 0.0). Deflection scales quadratically with height.
+    float pushFactor = pushMask * (h * h) * uCollisionStrength;
+    vec2 playerDeflection = pushDir * pushFactor;
+
+    // 3. Combined Horizontal Deflection Vector
+    vec2 totalHorizontal = windDeflection + playerDeflection;
+    transformed.xz += totalHorizontal;
+
+    // 4. Stalk Length Conservation: arc downward under horizontal tilt
+    // Preserves physical rod length: dy = -dot(total, total) * 0.22
+    // Clamped so vertices never penetrate underneath the ground surface (y >= 0.0)
+    float stalkDrop = dot(totalHorizontal, totalHorizontal) * 0.22;
+    transformed.y = max(transformed.y - stalkDrop, 0.02 * h);
+  `;
+
+  // GPU Vertex Shader Bending via World Wind System & Player Collision on Gen 1
+  poleMaterialGen1.onBeforeCompile = (shader) => {
+    if (worldWind) {
       worldWind.applyToShader(shader);
+    }
+    for (const [key, uniform] of Object.entries(collisionUniforms)) {
+      shader.uniforms[key] = uniform;
+    }
 
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <common>',
-        `
-        #include <common>
-        varying float vPoleGustFactor;
-        ${worldWind.glslChunk}
-        `
-      );
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `
+      #include <common>
+      ${collisionParsGLSL}
+      varying float vPoleGustFactor;
+      ${worldWind ? worldWind.glslChunk : ''}
+      `
+    );
 
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <begin_vertex>',
-        `
-        #include <begin_vertex>
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `
+      ${gen1VertexBendingGLSL}
 
-        #ifdef USE_INSTANCING
-          vec3 instanceRootPos = instanceMatrix[3].xyz;
-        #else
-          vec3 instanceRootPos = vec3(0.0);
-        #endif
+      // Pass gust factor to fragment shader for tip illumination
+      ${worldWind ? 'vPoleGustFactor = wind.gustMask * h;' : ''}
+      `
+    );
 
-        // Height factor along pole (0.0 at base root, 1.0 at tip)
-        float h = clamp(position.y / ${POLE_HEIGHT.toFixed(1)}, 0.0, 1.0);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      `
+      #include <common>
+      varying float vPoleGustFactor;
+      ${worldWind ? worldWind.glslPars : ''}
+      `
+    );
 
-        // Sample centralized world wind system (idle rustle + gust wave front)
-        WorldWindSample wind = sampleWorldWind(instanceRootPos.xz, uWorldWindTime, h);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `
+      #include <color_fragment>
+      ${worldWind ? 'diffuseColor.rgb = mix(diffuseColor.rgb, uWorldWindGustColor, vPoleGustFactor * 0.65);' : ''}
+      `
+    );
+  };
 
-        // Deflect along the traveling wind direction vector
-        transformed.xz += wind.direction * (wind.totalBend * 0.85);
+  // Custom Depth Material: mirrors identical wind & collision displacement in sun shadow pass
+  const customDepthMaterialGen1 = new THREE.MeshDepthMaterial({
+    depthPacking: THREE.RGBADepthPacking
+  });
 
-        // Arc downward to maintain physical stalk length
-        transformed.y  -= (wind.totalBend * wind.totalBend) * 0.28;
+  customDepthMaterialGen1.onBeforeCompile = (shader) => {
+    if (worldWind) {
+      worldWind.applyToShader(shader);
+    }
+    for (const [key, uniform] of Object.entries(collisionUniforms)) {
+      shader.uniforms[key] = uniform;
+    }
 
-        // Pass gust factor to fragment shader for tip illumination
-        vPoleGustFactor = wind.gustMask * h;
-        `
-      );
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `
+      #include <common>
+      ${collisionParsGLSL}
+      ${worldWind ? worldWind.glslChunk : ''}
+      `
+    );
 
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <common>',
-        `
-        #include <common>
-        varying float vPoleGustFactor;
-        ${worldWind.glslPars}
-        `
-      );
-
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <color_fragment>',
-        `
-        #include <color_fragment>
-        diffuseColor.rgb = mix(diffuseColor.rgb, uWorldWindGustColor, vPoleGustFactor * 0.65);
-        `
-      );
-    };
-  }
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      gen1VertexBendingGLSL
+    );
+  };
 
   // Populate Gen 1 positions (circular hero field)
   const gen1Positions = [];
@@ -115,6 +199,7 @@ export function createGrass(scene, worldWind) {
   instancedPolesGen1.name = 'GrassGen1_Hero';
   instancedPolesGen1.castShadow = true;
   instancedPolesGen1.receiveShadow = true;
+  instancedPolesGen1.customDepthMaterial = customDepthMaterialGen1;
 
   for (let i = 0; i < gen1Count; i++) {
     const p = gen1Positions[i];
@@ -413,12 +498,14 @@ export function createGrass(scene, worldWind) {
 
   function update(playerPos) {
     if (playerPos) {
+      collisionUniforms.uPlayerPosition.value.copy(playerPos);
       gen3Uniforms.uGen3PlayerPos.value.copy(playerPos);
     }
   }
 
   function setPlayer(playerPos) {
     if (playerPos) {
+      collisionUniforms.uPlayerPosition.value.copy(playerPos);
       gen3Uniforms.uGen3PlayerPos.value = playerPos;
     }
   }
@@ -437,6 +524,8 @@ export function createGrass(scene, worldWind) {
     material: poleMaterialGen1,
     materialGen2: poleMaterialGen2,
     materialGen3: poleMaterialGen3,
+    customDepthMaterialGen1,
+    collisionUniforms,
     gen3Uniforms,
     update,
     setPlayer,

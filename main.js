@@ -62,7 +62,7 @@ function animate() {
   // Update sun light & shadow map frustum to follow the player
   lighting.update(player.group.position);
 
-  // Update grass player-relative gradient coordinates
+  // Update grass Gen 1 collision coordinates and Gen 3 horizon gradient
   grass.update(player.group.position);
 
   // Update orbit camera controls
