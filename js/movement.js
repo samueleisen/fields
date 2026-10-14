@@ -148,5 +148,17 @@ export function setupPlayerMovement(player, camera, controls) {
     previousPlayerPos.copy(player.group.position);
   }
 
-  return { update, keys };
+  function teleport(x, z) {
+    player.group.position.x = x;
+    player.group.position.z = z;
+    const groundHeight = getTerrainHeight(x, z);
+    player.group.position.y = groundHeight + CAPSULE_HALF_HEIGHT;
+    previousPlayerPos.copy(player.group.position);
+    controls.target.copy(player.group.position);
+    camera.position.set(x, player.group.position.y + 3.2, z + 7.5);
+    camera.lookAt(controls.target);
+    controls.update();
+  }
+
+  return { update, keys, teleport };
 }

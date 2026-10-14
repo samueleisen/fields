@@ -4,6 +4,19 @@ import { getTerrainHeight } from './terrain.js';
 // ============================================================================
 // Dual-Generation 3D Pole Grass Field (Gen 1: Hero Bending + Gen 2: Rigid)
 // ============================================================================
+
+// Reusable GPU GLSL chunk for evaluating undulating terrain elevation in vertex shaders
+export const TERRAIN_HEIGHT_GLSL = /* glsl */ `
+float getTerrainHeightGLSL(vec2 p) {
+  float w1 = sin(p.x * 0.036) * cos(p.y * 0.036) * 6.5;
+  float w2 = sin(p.x * 0.072 - p.y * 0.06) * 3.2;
+  float w3 = cos(p.x * 0.018 + p.y * 0.022) * 4.2;
+  float distSq = dot(p, p);
+  float horizonCurve = -distSq * 0.00008;
+  return w1 + w2 + w3 + horizonCurve;
+}
+`;
+
 export function createGrass(scene, worldWind) {
   const POLE_HEIGHT = 2.0;
   const POLE_RADIUS_BOTTOM = 0.37;
@@ -12,7 +25,7 @@ export function createGrass(scene, worldWind) {
   const dummy = new THREE.Object3D();
 
   // ==========================================================================
-  // Generation 1: Hero Field (0m <= r <= 40m) with GPU Cantilever Bending
+  // Generation 1: Hero Field (0m <= r <= 60m) with GPU Cantilever Bending
   // ==========================================================================
   const GEN1_RADIUS = 60.0;
   const GEN1_SPACING = 0.8;
@@ -51,7 +64,7 @@ export function createGrass(scene, worldWind) {
     uniform float uCollisionStrength;
   `;
 
-  // Shared vertex displacement chunk: combined World Wind + Player Trampling/Parting
+  // Shared vertex displacement chunk: Toroidal Tracking + World Wind + Player Trampling
   const gen1VertexBendingGLSL = /* glsl */ `
     #include <begin_vertex>
 
@@ -61,32 +74,42 @@ export function createGrass(scene, worldWind) {
       vec3 instanceRootPos = vec3(0.0);
     #endif
 
+    // 1. Toroidal Wrap & Snapped Grid Tracking on GPU (0.00ms CPU overhead)
+    const float GEN1_WIDTH = ${(GEN1_RADIUS * 2.0).toFixed(1)};
+    vec2 wrapOffset = floor((uPlayerPosition.xz - instanceRootPos.xz + ${GEN1_RADIUS.toFixed(1)}) / GEN1_WIDTH) * GEN1_WIDTH;
+    vec2 worldBladeXZ = instanceRootPos.xz + wrapOffset;
+    float worldTerrainY = getTerrainHeightGLSL(worldBladeXZ);
+    vec3 worldDelta = vec3(wrapOffset.x, worldTerrainY - instanceRootPos.y, wrapOffset.y);
+
+    // 2. Soft Edge Distance Attenuation (shrinks to 0 height at boundary, eliminating pop-in)
+    float distFromPlayer = length(worldBladeXZ - uPlayerPosition.xz);
+    float edgeFade = 1.0 - smoothstep(50.0, 60.0, distFromPlayer);
+    transformed *= edgeFade;
+
     // Height factor along pole (0.0 at base root in soil, 1.0 at tip)
     float h = clamp(position.y / ${POLE_HEIGHT.toFixed(1)}, 0.0, 1.0);
 
-    // 1. Environmental World Wind Deflection (cantilever bend)
+    // 3. Environmental World Wind Deflection (cantilever bend)
     ${worldWind ? `
-    WorldWindSample wind = sampleWorldWind(instanceRootPos.xz, uWorldWindTime, h);
+    WorldWindSample wind = sampleWorldWind(worldBladeXZ, uWorldWindTime, h);
     vec2 windDeflection = wind.direction * (wind.totalBend * 0.85);
     ` : `
     vec2 windDeflection = vec2(0.0);
     `}
 
-    // 2. Dynamic Player Capsule Trampling / Parting Collision
-    vec2 toBlade = instanceRootPos.xz - uPlayerPosition.xz;
+    // 4. Dynamic Player Capsule Trampling / Parting Collision
+    vec2 toBlade = worldBladeXZ - uPlayerPosition.xz;
     float distToPlayer = length(toBlade);
 
     // Radial push direction pointing outward away from player footprint
     vec2 pushDir = distToPlayer > 0.001 ? toBlade / distToPlayer : vec2(0.0, 1.0);
 
     // Interaction envelope: smooth falloff up to uCollisionRadius (1.5m)
-    // Blades directly under player boots (dist < 0.25) receive full push (1.0)
     float pushMask = 1.0 - smoothstep(0.25, uCollisionRadius, distToPlayer);
 
     // Vertical proximity check: ensure player is near the ground level of this blade
-    // Capsule center is at ground + 1.4m. Foot level is center - 1.4m.
     float footElevation = uPlayerPosition.y - 1.4;
-    float vertDist = abs(instanceRootPos.y - footElevation);
+    float vertDist = abs(worldTerrainY - footElevation);
     float vertMask = 1.0 - smoothstep(1.2, 2.4, vertDist);
     pushMask *= vertMask;
 
@@ -94,18 +117,16 @@ export function createGrass(scene, worldWind) {
     float pushFactor = pushMask * (h * h) * uCollisionStrength;
     vec2 playerDeflection = pushDir * pushFactor;
 
-    // 3. Combined Horizontal Deflection Vector
+    // 5. Combined Horizontal Deflection Vector
     vec2 totalHorizontal = windDeflection + playerDeflection;
     transformed.xz += totalHorizontal;
 
-    // 4. Stalk Length Conservation: arc downward under horizontal tilt
-    // Preserves physical rod length: dy = -dot(total, total) * 0.22
-    // Clamped so vertices never penetrate underneath the ground surface (y >= 0.0)
+    // 6. Stalk Length Conservation: arc downward under horizontal tilt
     float stalkDrop = dot(totalHorizontal, totalHorizontal) * 0.22;
     transformed.y = max(transformed.y - stalkDrop, 0.02 * h);
   `;
 
-  // GPU Vertex Shader Bending via World Wind System & Player Collision on Gen 1
+  // GPU Vertex Shader Bending via World Wind System, Player Collision & GPU Tracking on Gen 1
   poleMaterialGen1.onBeforeCompile = (shader) => {
     if (worldWind) {
       worldWind.applyToShader(shader);
@@ -118,6 +139,7 @@ export function createGrass(scene, worldWind) {
       '#include <common>',
       `
       #include <common>
+      ${TERRAIN_HEIGHT_GLSL}
       ${collisionParsGLSL}
       varying float vPoleGustFactor;
       ${worldWind ? worldWind.glslChunk : ''}
@@ -131,6 +153,39 @@ export function createGrass(scene, worldWind) {
 
       // Pass gust factor to fragment shader for tip illumination
       ${worldWind ? 'vPoleGustFactor = wind.gustMask * h;' : ''}
+      `
+    );
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `
+      vec4 mvPosition = vec4( transformed, 1.0 );
+      #ifdef USE_BATCHING
+        mvPosition = batchingMatrix * mvPosition;
+      #endif
+      #ifdef USE_INSTANCING
+        mvPosition = instanceMatrix * mvPosition;
+        mvPosition.xyz += worldDelta;
+      #endif
+      mvPosition = modelViewMatrix * mvPosition;
+      gl_Position = projectionMatrix * mvPosition;
+      `
+    );
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <worldpos_vertex>',
+      `
+      #if defined( USE_ENVMAP ) || defined( DISTANCE ) || defined ( USE_SHADOWMAP ) || defined ( USE_TRANSMISSION ) || NUM_SPOT_LIGHT_COORDS > 0
+        vec4 worldPosition = vec4( transformed, 1.0 );
+        #ifdef USE_BATCHING
+          worldPosition = batchingMatrix * worldPosition;
+        #endif
+        #ifdef USE_INSTANCING
+          worldPosition = instanceMatrix * worldPosition;
+          worldPosition.xyz += worldDelta;
+        #endif
+        worldPosition = modelMatrix * worldPosition;
+      #endif
       `
     );
 
@@ -152,7 +207,7 @@ export function createGrass(scene, worldWind) {
     );
   };
 
-  // Custom Depth Material: mirrors identical wind & collision displacement in sun shadow pass
+  // Custom Depth Material: mirrors identical tracking, wind & collision displacement in sun shadow pass
   const customDepthMaterialGen1 = new THREE.MeshDepthMaterial({
     depthPacking: THREE.RGBADepthPacking
   });
@@ -169,6 +224,7 @@ export function createGrass(scene, worldWind) {
       '#include <common>',
       `
       #include <common>
+      ${TERRAIN_HEIGHT_GLSL}
       ${collisionParsGLSL}
       ${worldWind ? worldWind.glslChunk : ''}
       `
@@ -178,19 +234,33 @@ export function createGrass(scene, worldWind) {
       '#include <begin_vertex>',
       gen1VertexBendingGLSL
     );
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `
+      vec4 mvPosition = vec4( transformed, 1.0 );
+      #ifdef USE_BATCHING
+        mvPosition = batchingMatrix * mvPosition;
+      #endif
+      #ifdef USE_INSTANCING
+        mvPosition = instanceMatrix * mvPosition;
+        mvPosition.xyz += worldDelta;
+      #endif
+      mvPosition = modelViewMatrix * mvPosition;
+      gl_Position = projectionMatrix * mvPosition;
+      `
+    );
   };
 
-  // Populate Gen 1 positions (circular hero field)
+  // Populate Gen 1 positions: exact periodic tile [-GEN1_RADIUS, +GEN1_RADIUS)
+  // With 150 x 150 instances spaced at 0.8m (120m period), toroidal wrapping tiles the infinite plane seamlessly
   const gen1Positions = [];
-  for (let x = -GEN1_RADIUS; x <= GEN1_RADIUS; x += GEN1_SPACING) {
-    for (let z = -GEN1_RADIUS; z <= GEN1_RADIUS; z += GEN1_SPACING) {
-      const dist = Math.sqrt(x * x + z * z);
-      if (dist <= GEN1_RADIUS) {
-        const jx = x + (Math.random() - 0.5) * (GEN1_SPACING * 0.6);
-        const jz = z + (Math.random() - 0.5) * (GEN1_SPACING * 0.6);
-        const jy = getTerrainHeight(jx, jz);
-        gen1Positions.push({ x: jx, y: jy, z: jz });
-      }
+  for (let x = -GEN1_RADIUS; x < GEN1_RADIUS - 0.001; x += GEN1_SPACING) {
+    for (let z = -GEN1_RADIUS; z < GEN1_RADIUS - 0.001; z += GEN1_SPACING) {
+      const jx = x + (Math.random() - 0.5) * (GEN1_SPACING * 0.6);
+      const jz = z + (Math.random() - 0.5) * (GEN1_SPACING * 0.6);
+      const jy = getTerrainHeight(jx, jz);
+      gen1Positions.push({ x: jx, y: jy, z: jz });
     }
   }
 
@@ -199,6 +269,7 @@ export function createGrass(scene, worldWind) {
   instancedPolesGen1.name = 'GrassGen1_Hero';
   instancedPolesGen1.castShadow = true;
   instancedPolesGen1.receiveShadow = true;
+  instancedPolesGen1.frustumCulled = false; // Always render dynamic tracking mesh
   instancedPolesGen1.customDepthMaterial = customDepthMaterialGen1;
 
   for (let i = 0; i < gen1Count; i++) {
@@ -216,7 +287,6 @@ export function createGrass(scene, worldWind) {
   // ==========================================================================
   // Generation 2: Outer Field (40m < r <= 90m) - Rigid (No Bending)
   // ==========================================================================
-  const GEN2_RADIUS_INNER = GEN1_RADIUS;
   const GEN2_RADIUS_OUTER = 90.0;
   const GEN2_SPACING = 1.2;
 
@@ -239,73 +309,178 @@ export function createGrass(scene, worldWind) {
     flatShading: false
   });
 
-  // Wind Gust Tip Illumination Shader (Rigid - Zero Vertex Displacement)
-  if (worldWind) {
-    poleMaterialGen2.onBeforeCompile = (shader) => {
+  // Wind Gust Tip Illumination & Toroidal Grid Tracking on Gen 2
+  poleMaterialGen2.onBeforeCompile = (shader) => {
+    if (worldWind) {
       worldWind.applyToShader(shader);
+    }
+    for (const [key, uniform] of Object.entries(collisionUniforms)) {
+      shader.uniforms[key] = uniform;
+    }
 
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <common>',
-        `
-        #include <common>
-        varying float vPoleGustFactor;
-        ${worldWind.glslChunk}
-        `
-      );
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `
+      #include <common>
+      ${TERRAIN_HEIGHT_GLSL}
+      uniform vec3 uPlayerPosition;
+      varying float vPoleGustFactor;
+      ${worldWind ? worldWind.glslChunk : ''}
+      `
+    );
 
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <begin_vertex>',
-        `
-        #include <begin_vertex>
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `
+      #include <begin_vertex>
 
-        #ifdef USE_INSTANCING
-          vec3 instanceRootPos = instanceMatrix[3].xyz;
-        #else
-          vec3 instanceRootPos = vec3(0.0);
+      #ifdef USE_INSTANCING
+        vec3 instanceRootPos = instanceMatrix[3].xyz;
+      #else
+        vec3 instanceRootPos = vec3(0.0);
+      #endif
+
+      // 1. Toroidal Wrap & Snapped Grid Tracking on GPU (0.00ms CPU overhead)
+      const float GEN2_WIDTH = ${(GEN2_RADIUS_OUTER * 2.0).toFixed(1)};
+      vec2 wrapOffset = floor((uPlayerPosition.xz - instanceRootPos.xz + ${GEN2_RADIUS_OUTER.toFixed(1)}) / GEN2_WIDTH) * GEN2_WIDTH;
+      vec2 worldBladeXZ = instanceRootPos.xz + wrapOffset;
+      float worldTerrainY = getTerrainHeightGLSL(worldBladeXZ);
+      vec3 worldDelta = vec3(wrapOffset.x, worldTerrainY - instanceRootPos.y, wrapOffset.y);
+
+      // 2. Soft Cross-Fade: inner blend with Gen 1 (50m to 60m), outer blend with Gen 3 (80m to 90m)
+      float distFromPlayer = length(worldBladeXZ - uPlayerPosition.xz);
+      float innerFade = smoothstep(50.0, 60.0, distFromPlayer);
+      float outerFade = 1.0 - smoothstep(80.0, 90.0, distFromPlayer);
+      transformed *= (innerFade * outerFade);
+
+      // Height factor along pole (0.0 at base, 1.0 at tip)
+      float h = clamp(position.y / ${POLE_HEIGHT.toFixed(1)}, 0.0, 1.0);
+
+      // Sample centralized world wind front
+      WorldWindSample wind = sampleWorldWind(worldBladeXZ, uWorldWindTime, h);
+      vPoleGustFactor = wind.gustMask * h;
+      `
+    );
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `
+      vec4 mvPosition = vec4( transformed, 1.0 );
+      #ifdef USE_BATCHING
+        mvPosition = batchingMatrix * mvPosition;
+      #endif
+      #ifdef USE_INSTANCING
+        mvPosition = instanceMatrix * mvPosition;
+        mvPosition.xyz += worldDelta;
+      #endif
+      mvPosition = modelViewMatrix * mvPosition;
+      gl_Position = projectionMatrix * mvPosition;
+      `
+    );
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <worldpos_vertex>',
+      `
+      #if defined( USE_ENVMAP ) || defined( DISTANCE ) || defined ( USE_SHADOWMAP ) || defined ( USE_TRANSMISSION ) || NUM_SPOT_LIGHT_COORDS > 0
+        vec4 worldPosition = vec4( transformed, 1.0 );
+        #ifdef USE_BATCHING
+          worldPosition = batchingMatrix * worldPosition;
         #endif
+        #ifdef USE_INSTANCING
+          worldPosition = instanceMatrix * worldPosition;
+          worldPosition.xyz += worldDelta;
+        #endif
+        worldPosition = modelMatrix * worldPosition;
+      #endif
+      `
+    );
 
-        // Height factor along pole (0.0 at base, 1.0 at tip)
-        float h = clamp(position.y / ${POLE_HEIGHT.toFixed(1)}, 0.0, 1.0);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      `
+      #include <common>
+      varying float vPoleGustFactor;
+      ${worldWind ? worldWind.glslPars : ''}
+      `
+    );
 
-        // Sample centralized world wind front
-        WorldWindSample wind = sampleWorldWind(instanceRootPos.xz, uWorldWindTime, h);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `
+      #include <color_fragment>
+      diffuseColor.rgb = mix(diffuseColor.rgb, uWorldWindGustColor, vPoleGustFactor * 0.65);
+      `
+    );
+  };
 
-        // Rigid: zero vertex displacement (no bending)
-        // Pass gust factor to fragment shader for traveling wave illumination
-        vPoleGustFactor = wind.gustMask * h;
-        `
-      );
+  // Custom Depth Material for Gen 2 (sun shadow map tracking parity)
+  const customDepthMaterialGen2 = new THREE.MeshDepthMaterial({
+    depthPacking: THREE.RGBADepthPacking
+  });
 
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <common>',
-        `
-        #include <common>
-        varying float vPoleGustFactor;
-        ${worldWind.glslPars}
-        `
-      );
+  customDepthMaterialGen2.onBeforeCompile = (shader) => {
+    for (const [key, uniform] of Object.entries(collisionUniforms)) {
+      shader.uniforms[key] = uniform;
+    }
 
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <color_fragment>',
-        `
-        #include <color_fragment>
-        diffuseColor.rgb = mix(diffuseColor.rgb, uWorldWindGustColor, vPoleGustFactor * 0.65);
-        `
-      );
-    };
-  }
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `
+      #include <common>
+      ${TERRAIN_HEIGHT_GLSL}
+      uniform vec3 uPlayerPosition;
+      `
+    );
 
-  // Populate Gen 2 positions (annular outer ring)
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `
+      #include <begin_vertex>
+      #ifdef USE_INSTANCING
+        vec3 instanceRootPos = instanceMatrix[3].xyz;
+      #else
+        vec3 instanceRootPos = vec3(0.0);
+      #endif
+
+      const float GEN2_WIDTH = ${(GEN2_RADIUS_OUTER * 2.0).toFixed(1)};
+      vec2 wrapOffset = floor((uPlayerPosition.xz - instanceRootPos.xz + ${GEN2_RADIUS_OUTER.toFixed(1)}) / GEN2_WIDTH) * GEN2_WIDTH;
+      vec2 worldBladeXZ = instanceRootPos.xz + wrapOffset;
+      float worldTerrainY = getTerrainHeightGLSL(worldBladeXZ);
+      vec3 worldDelta = vec3(wrapOffset.x, worldTerrainY - instanceRootPos.y, wrapOffset.y);
+
+      float distFromPlayer = length(worldBladeXZ - uPlayerPosition.xz);
+      float innerFade = smoothstep(50.0, 60.0, distFromPlayer);
+      float outerFade = 1.0 - smoothstep(80.0, 90.0, distFromPlayer);
+      transformed *= (innerFade * outerFade);
+      `
+    );
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `
+      vec4 mvPosition = vec4( transformed, 1.0 );
+      #ifdef USE_BATCHING
+        mvPosition = batchingMatrix * mvPosition;
+      #endif
+      #ifdef USE_INSTANCING
+        mvPosition = instanceMatrix * mvPosition;
+        mvPosition.xyz += worldDelta;
+      #endif
+      mvPosition = modelViewMatrix * mvPosition;
+      gl_Position = projectionMatrix * mvPosition;
+      `
+    );
+  };
+
+  // Populate Gen 2 positions: exact periodic tile [-GEN2_RADIUS_OUTER, +GEN2_RADIUS_OUTER)
+  // With 150 x 150 instances spaced at 1.2m (180m period), toroidal wrapping tiles the infinite plane seamlessly
   const gen2Positions = [];
-  for (let x = -GEN2_RADIUS_OUTER; x <= GEN2_RADIUS_OUTER; x += GEN2_SPACING) {
-    for (let z = -GEN2_RADIUS_OUTER; z <= GEN2_RADIUS_OUTER; z += GEN2_SPACING) {
-      const dist = Math.sqrt(x * x + z * z);
-      if (dist > GEN2_RADIUS_INNER && dist <= GEN2_RADIUS_OUTER) {
-        const jx = x + (Math.random() - 0.5) * (GEN2_SPACING * 0.6);
-        const jz = z + (Math.random() - 0.5) * (GEN2_SPACING * 0.6);
-        const jy = getTerrainHeight(jx, jz);
-        gen2Positions.push({ x: jx, y: jy, z: jz });
-      }
+  for (let x = -GEN2_RADIUS_OUTER; x < GEN2_RADIUS_OUTER - 0.001; x += GEN2_SPACING) {
+    for (let z = -GEN2_RADIUS_OUTER; z < GEN2_RADIUS_OUTER - 0.001; z += GEN2_SPACING) {
+      const jx = x + (Math.random() - 0.5) * (GEN2_SPACING * 0.6);
+      const jz = z + (Math.random() - 0.5) * (GEN2_SPACING * 0.6);
+      const jy = getTerrainHeight(jx, jz);
+      gen2Positions.push({ x: jx, y: jy, z: jz });
     }
   }
 
@@ -314,6 +489,8 @@ export function createGrass(scene, worldWind) {
   instancedPolesGen2.name = 'GrassGen2_OuterRigid';
   instancedPolesGen2.castShadow = true; // Cast shadows dynamically
   instancedPolesGen2.receiveShadow = true;
+  instancedPolesGen2.frustumCulled = false; // Always render dynamic tracking mesh
+  instancedPolesGen2.customDepthMaterial = customDepthMaterialGen2;
 
   for (let i = 0; i < gen2Count; i++) {
     const p = gen2Positions[i];
@@ -330,9 +507,8 @@ export function createGrass(scene, worldWind) {
   // ==========================================================================
   // Generation 3: Horizon Field (90m < r <= 160m) - Flat Triangle Tracking Perspective
   // ==========================================================================
-  const GEN3_RADIUS_INNER = GEN2_RADIUS_OUTER;
-  const GEN3_RADIUS_OUTER = 160.0;
-  const GEN3_SPACING = 1.3;
+  const GEN3_RADIUS_OUTER = 180.0;
+  const GEN3_SPACING = 1.8;
 
   // Single flat 2D triangle geometry (1 triangle = 3 vertices) - enlarged for distant horizon visibility
   const GEN3_WIDTH = 1.4;  // Expanded base width (1.40m)
@@ -376,7 +552,7 @@ export function createGrass(scene, worldWind) {
     uGen3ColorSouth: { value: new THREE.Color(0x00440e) }           // Factor 0: Deep meadow green (South)
   };
 
-  // Perspective Billboarding + Player Gradient (North 1 / South 0) + Wind Gust Highlight
+  // Perspective Billboarding + Player Gradient (North 1 / South 0) + Wind Gust Highlight + GPU Tracking
   poleMaterialGen3.onBeforeCompile = (shader) => {
     if (worldWind) {
       worldWind.applyToShader(shader);
@@ -390,6 +566,7 @@ export function createGrass(scene, worldWind) {
       '#include <common>',
       `
       #include <common>
+      ${TERRAIN_HEIGHT_GLSL}
       uniform vec3 uGen3PlayerPos;
       uniform vec2 uGen3SouthDir;
       varying float vGen3SideFactor;
@@ -409,32 +586,59 @@ export function createGrass(scene, worldWind) {
         vec3 instanceRootPos = vec3(0.0);
       #endif
 
+      // 1. Toroidal Wrap & Snapped Grid Tracking on GPU (0.00ms CPU overhead)
+      const float GEN3_WIDTH = ${(GEN3_RADIUS_OUTER * 2.0).toFixed(1)};
+      vec2 wrapOffset = floor((uGen3PlayerPos.xz - instanceRootPos.xz + ${GEN3_RADIUS_OUTER.toFixed(1)}) / GEN3_WIDTH) * GEN3_WIDTH;
+      vec2 worldBladeXZ = instanceRootPos.xz + wrapOffset;
+      float worldTerrainY = getTerrainHeightGLSL(worldBladeXZ);
+      vec3 worldDelta = vec3(wrapOffset.x, worldTerrainY - instanceRootPos.y, wrapOffset.y);
+
+      // 2. Soft Cross-Fade: inner blend with Gen 2 (80m to 90m), outer blend into horizon fog (160m to 180m)
+      float distFromPlayer = length(worldBladeXZ - uGen3PlayerPos.xz);
+      float innerFade = smoothstep(80.0, 90.0, distFromPlayer);
+      float outerFade = 1.0 - smoothstep(160.0, 180.0, distFromPlayer);
+      float fadeFactor = innerFade * outerFade;
+
       // 1. Perspective Billboard Tracking:
-      // Rotate around Y-axis so flat triangle always faces the camera perspective
-      vec2 toView = cameraPosition.xz - instanceRootPos.xz;
+      // Rotate around Y-axis so flat triangle always faces the camera perspective from its actual world position
+      vec2 toView = cameraPosition.xz - worldBladeXZ;
       float viewDistSq = dot(toView, toView);
       vec2 forwardDir = viewDistSq > 0.0001 ? normalize(toView) : vec2(0.0, 1.0);
       vec2 rightDir = vec2(-forwardDir.y, forwardDir.x);
 
-      // Orient flat triangle along tangent axis
-      transformed.xz = rightDir * position.x;
-      transformed.y  = position.y;
+      // Orient flat triangle along tangent axis and apply soft fade
+      transformed.xz = rightDir * (position.x * fadeFactor);
+      transformed.y  = position.y * fadeFactor;
 
       // 2. Player-relative North/South gradient (North = factor 1, South = factor 0):
-      vec2 offsetFromPlayer = instanceRootPos.xz - uGen3PlayerPos.xz;
+      vec2 offsetFromPlayer = worldBladeXZ - uGen3PlayerPos.xz;
       float offsetLen = length(offsetFromPlayer);
       vec2 dirFromPlayer = offsetLen > 0.01 ? offsetFromPlayer / offsetLen : vec2(0.0, -1.0);
 
       // Dot product with North direction vector (0, -1):
-      // North blade (-Z) -> dot is +1.0 -> factor is 1.0 (uGen3ColorNorth: bright)
-      // South blade (+Z) -> dot is -1.0 -> factor is 0.0 (uGen3ColorSouth: dark)
       float rawSide = dot(dirFromPlayer, uGen3SouthDir) * 0.5 + 0.5;
       vGen3SideFactor = smoothstep(0.05, 0.95, clamp(rawSide, 0.0, 1.0));
 
       // 3. Sample World Wind gust front for tip color illumination
       float h = clamp(position.y / ${GEN3_HEIGHT.toFixed(1)}, 0.0, 1.0);
-      WorldWindSample wind = sampleWorldWind(instanceRootPos.xz, uWorldWindTime, h);
+      WorldWindSample wind = sampleWorldWind(worldBladeXZ, uWorldWindTime, h);
       vPoleGustFactor = wind.gustMask * h;
+      `
+    );
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `
+      vec4 mvPosition = vec4( transformed, 1.0 );
+      #ifdef USE_BATCHING
+        mvPosition = batchingMatrix * mvPosition;
+      #endif
+      #ifdef USE_INSTANCING
+        mvPosition = instanceMatrix * mvPosition;
+        mvPosition.xyz += worldDelta;
+      #endif
+      mvPosition = modelViewMatrix * mvPosition;
+      gl_Position = projectionMatrix * mvPosition;
       `
     );
 
@@ -464,17 +668,15 @@ export function createGrass(scene, worldWind) {
     );
   };
 
-  // Populate Gen 3 positions (annular outer horizon ring: 90m to 160m)
+  // Populate Gen 3 positions: exact periodic tile [-GEN3_RADIUS_OUTER, +GEN3_RADIUS_OUTER)
+  // With 200 x 200 instances spaced at 1.8m (360m period), toroidal wrapping tiles the infinite horizon seamlessly
   const gen3Positions = [];
-  for (let x = -GEN3_RADIUS_OUTER; x <= GEN3_RADIUS_OUTER; x += GEN3_SPACING) {
-    for (let z = -GEN3_RADIUS_OUTER; z <= GEN3_RADIUS_OUTER; z += GEN3_SPACING) {
-      const dist = Math.sqrt(x * x + z * z);
-      if (dist > GEN3_RADIUS_INNER && dist <= GEN3_RADIUS_OUTER) {
-        const jx = x + (Math.random() - 0.5) * (GEN3_SPACING * 0.6);
-        const jz = z + (Math.random() - 0.5) * (GEN3_SPACING * 0.6);
-        const jy = getTerrainHeight(jx, jz);
-        gen3Positions.push({ x: jx, y: jy, z: jz });
-      }
+  for (let x = -GEN3_RADIUS_OUTER; x < GEN3_RADIUS_OUTER - 0.001; x += GEN3_SPACING) {
+    for (let z = -GEN3_RADIUS_OUTER; z < GEN3_RADIUS_OUTER - 0.001; z += GEN3_SPACING) {
+      const jx = x + (Math.random() - 0.5) * (GEN3_SPACING * 0.6);
+      const jz = z + (Math.random() - 0.5) * (GEN3_SPACING * 0.6);
+      const jy = getTerrainHeight(jx, jz);
+      gen3Positions.push({ x: jx, y: jy, z: jz });
     }
   }
 
@@ -483,6 +685,7 @@ export function createGrass(scene, worldWind) {
   instancedPolesGen3.name = 'GrassGen3_HorizonBillboard';
   instancedPolesGen3.castShadow = false;    // Strictly NO shadow casting for maximum performance
   instancedPolesGen3.receiveShadow = false; // Zero shadow receiving (pure unlit flat color)
+  instancedPolesGen3.frustumCulled = false; // Always render dynamic tracking mesh
 
   for (let i = 0; i < gen3Count; i++) {
     const p = gen3Positions[i];
@@ -525,6 +728,7 @@ export function createGrass(scene, worldWind) {
     materialGen2: poleMaterialGen2,
     materialGen3: poleMaterialGen3,
     customDepthMaterialGen1,
+    customDepthMaterialGen2,
     collisionUniforms,
     gen3Uniforms,
     update,
