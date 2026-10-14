@@ -33,6 +33,7 @@ const grass = createGrass(scene, worldWind);
 
 // 6. Create Vertical Capsule Player
 const player = createPlayer(scene);
+grass.setPlayer(player.group.position);
 
 // 7. Setup Camera & Orbit Controls (Tracking Player)
 const { controls, resetCameraView } = createControls(camera, renderer.domElement, player);
@@ -60,6 +61,9 @@ function animate() {
 
   // Update sun light & shadow map frustum to follow the player
   lighting.update(player.group.position);
+
+  // Update grass player-relative gradient coordinates
+  grass.update(player.group.position);
 
   // Update orbit camera controls
   controls.update();

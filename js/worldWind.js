@@ -143,11 +143,11 @@ export class WorldWind {
     const windDist = (x * this.direction.x + z * this.direction.y) - (time * this.speed);
 
     const waveMain = Math.sin(windDist * 0.05);
-    const waveMid  = Math.sin(windDist * 0.11 + x * 0.02);
+    const waveMid = Math.sin(windDist * 0.11 + x * 0.02);
     const waveFine = Math.sin(windDist * 0.22 - z * 0.018);
 
     const r1 = Math.pow(Math.min(Math.max(waveMain * 0.5 + 0.5, 0.0), 1.0), 3.0);
-    const r2 = Math.pow(Math.min(Math.max(waveMid  * 0.5 + 0.5, 0.0), 1.0), 4.0);
+    const r2 = Math.pow(Math.min(Math.max(waveMid * 0.5 + 0.5, 0.0), 1.0), 4.0);
     const r3 = Math.pow(Math.min(Math.max(waveFine * 0.5 + 0.5, 0.0), 1.0), 5.0);
 
     const front = r1 * 0.65 + r2 * 0.38 + r3 * 0.25;
