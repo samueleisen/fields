@@ -15,10 +15,10 @@ export function createLighting(scene) {
   sunLight.shadow.mapSize.height = 2048;
   sunLight.shadow.camera.near = 1;
   sunLight.shadow.camera.far = 150;
-  sunLight.shadow.camera.left = -30;
-  sunLight.shadow.camera.right = 30;
-  sunLight.shadow.camera.top = 30;
-  sunLight.shadow.camera.bottom = -30;
+  sunLight.shadow.camera.left = -70;
+  sunLight.shadow.camera.right = 70;
+  sunLight.shadow.camera.top = 70;
+  sunLight.shadow.camera.bottom = -70;
   sunLight.shadow.bias = -0.0003;
   sunLight.shadow.radius = 2.5;
 

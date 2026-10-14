@@ -45,48 +45,8 @@ export function createTerrain(scene, worldWind) {
     flatShading: false
   });
 
-  // World Wind Shader Integration (Option B: Stylized Ribbon / Ghibli Gust)
-  if (worldWind) {
-    terrainMaterial.onBeforeCompile = (shader) => {
-      worldWind.applyToShader(shader);
-
-      // 1. Pass world position from vertex to fragment shader
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <common>',
-        `
-        #include <common>
-        varying vec3 vTerrainWorldPos;
-        `
-      );
-
-      shader.vertexShader = shader.vertexShader.replace(
-        '#include <worldpos_vertex>',
-        `
-        #include <worldpos_vertex>
-        vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-        `
-      );
-
-      // 2. In fragment shader, sample the centralized world wind wave front
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <common>',
-        `
-        #include <common>
-        varying vec3 vTerrainWorldPos;
-        ${worldWind.glslChunk}
-        `
-      );
-
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <color_fragment>',
-        `
-        #include <color_fragment>
-        WorldWindSample windSample = sampleWorldWind(vTerrainWorldPos.xz, uWorldWindTime, 0.0);
-        diffuseColor.rgb = mix(diffuseColor.rgb, windSample.gustColor, windSample.gustMask * 0.85);
-        `
-      );
-    };
-  }
+  // World Wind ground shader injection turned off for performance
+  // (Eliminates heavy per-fragment multi-harmonic wave math across the terrain)
 
   const terrainMesh = new THREE.Mesh(terrainGeometry, terrainMaterial);
   terrainMesh.receiveShadow = true;

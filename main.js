@@ -11,9 +11,13 @@ import { createGrass } from './js/grass.js';
 import { createControls } from './js/controls.js';
 import { setupPlayerMovement } from './js/movement.js';
 import { setupUI } from './js/ui.js';
+import { attachDiagnostics } from './js/diagnostics.js';
 
 // 1. Initialize Scene, Camera, Renderer & Fog
 const { scene, camera, renderer, horizonFog } = createScene();
+
+// Detachable telemetry & computational diagnostics (removable at any time)
+const diagnostics = attachDiagnostics({ renderer, scene });
 
 // 2. Setup Lighting (Sun, Hemisphere, Ambient)
 const lighting = createLighting(scene);
@@ -66,7 +70,7 @@ animate();
 
 // Expose game instance for testing and debugging
 if (typeof window !== 'undefined') {
-  window.game = { player, controls, camera, playerMovement, getTerrainHeight, lighting, terrain, grass, worldWind };
+  window.game = { player, controls, camera, playerMovement, getTerrainHeight, lighting, terrain, grass, worldWind, diagnostics };
 }
 
 // Export player, grass, world wind and elevation helper for modular extension
