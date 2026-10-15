@@ -35,8 +35,8 @@ export function createGrass(scene, worldWind) {
       radius: 250.0,                         // Extended reach (+5m offset past 60m)
       gridCount: 160,                       // 160 x 160 = 25,600 blades
       spacing: 0.815,          // 0.8125m (exact seamless periodic tile)
-      fadeStart: 55.0,                      // Begins gentle fade out
-      fadeEnd: 65.0                         // Completely drops to 0 at tile boundary
+      fadeStart: 240.0,                      // Begins gentle fade out
+      fadeEnd: 250.0                         // Completely drops to 0 at tile boundary
     },
     gen2: {
       radius: 95.0,                         // Extended reach (+5m offset past 90m)
