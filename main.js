@@ -34,6 +34,7 @@ const grass = createGrass(scene, worldWind);
 // 6. Create Vertical Capsule Player
 const player = createPlayer(scene);
 grass.setPlayer(player.group.position);
+terrain.update(player.group.position);
 
 // 7. Setup Camera & Orbit Controls (Tracking Player)
 const { controls, resetCameraView } = createControls(camera, renderer.domElement, player);
@@ -64,6 +65,9 @@ function animate() {
 
   // Update grass Gen 1 collision coordinates and Gen 3 horizon gradient
   grass.update(player.group.position);
+
+  // Update terrain 2-color directional gradation (Gen 3 harmony)
+  terrain.update(player.group.position);
 
   // Update orbit camera controls
   controls.update();

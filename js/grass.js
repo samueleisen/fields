@@ -25,10 +25,48 @@ export function createGrass(scene, worldWind) {
   const dummy = new THREE.Object3D();
 
   // ==========================================================================
-  // Generation 1: Hero Field (0m <= r <= 60m) with GPU Cantilever Bending
+  // Foliage Multi-Tier Spatial Coverage & Overlap Configuration
   // ==========================================================================
-  const GEN1_RADIUS = 60.0;
-  const GEN1_SPACING = 0.8;
+  // An explicit +5m offset is applied to Gen 1 (65m reach vs 60m base), enabling
+  // high-detail hero grass with bending & trampling collision to reach into Gen 2's
+  // zone, creating an organic 15-meter interlocking blend zone [50m, 65m].
+  const FOLIAGE_CONFIG = {
+    gen1: {
+      radius: 65.0,                         // Extended reach (+5m offset past 60m)
+      gridCount: 160,                       // 160 x 160 = 25,600 blades
+      spacing: 0.815,          // 0.8125m (exact seamless periodic tile)
+      fadeStart: 55.0,                      // Begins gentle fade out
+      fadeEnd: 65.0                         // Completely drops to 0 at tile boundary
+    },
+    gen2: {
+      radius: 95.0,                         // Extended reach (+5m offset past 90m)
+      gridCount: 190,                       // 190 x 190 = 36,100 blades
+      spacing: 0.82,          // 1.0m (exact seamless periodic tile)
+      fadeInnerStart: 50.0,                 // Begins rising at 50m (touches & overlaps Gen 1)
+      fadeInnerEnd: 60.0,                   // Reaches full scale by 60m
+      fadeOuterStart: 85.0,                 // Begins gentle fade into Gen 3
+      fadeOuterEnd: 95.0                    // Completely drops to 0 at 95m boundary
+    },
+    gen3: {
+      radius: 500.0,                        // 360m period (tile width)
+      spacing: 1.4,                         // 200 x 200 = 40,000 blades
+      fadeInnerStart: 80.0,                 // Overlaps Gen 2 in [80m, 95m]
+      fadeInnerEnd: 90.0,                   // Reaches full scale by 90m
+      fadeOuterStart: 160.0,                // Soft horizon dissolve
+      fadeOuterEnd: 500.0                   // Completely drops to 0 at horizon boundary
+    }
+  };
+
+  const GEN1_RADIUS = FOLIAGE_CONFIG.gen1.radius;
+  const GEN1_SPACING = FOLIAGE_CONFIG.gen1.spacing;
+  const GEN2_RADIUS_OUTER = FOLIAGE_CONFIG.gen2.radius;
+  const GEN2_SPACING = FOLIAGE_CONFIG.gen2.spacing;
+  const GEN3_RADIUS_OUTER = FOLIAGE_CONFIG.gen3.radius;
+  const GEN3_SPACING = FOLIAGE_CONFIG.gen3.spacing;
+
+  // ==========================================================================
+  // Generation 1: Hero Field (0m <= r <= 65m) with GPU Cantilever Bending
+  // ==========================================================================
 
   // Tapered 3-sided pole geometry (triangular prism: 3D from all angles, 3 height segments for bending)
   const poleGeoGen1 = new THREE.CylinderGeometry(
@@ -75,15 +113,15 @@ export function createGrass(scene, worldWind) {
     #endif
 
     // 1. Toroidal Wrap & Snapped Grid Tracking on GPU (0.00ms CPU overhead)
-    const float GEN1_WIDTH = ${(GEN1_RADIUS * 2.0).toFixed(1)};
-    vec2 wrapOffset = floor((uPlayerPosition.xz - instanceRootPos.xz + ${GEN1_RADIUS.toFixed(1)}) / GEN1_WIDTH) * GEN1_WIDTH;
+    const float GEN1_WIDTH = ${(FOLIAGE_CONFIG.gen1.radius * 2.0).toFixed(1)};
+    vec2 wrapOffset = floor((uPlayerPosition.xz - instanceRootPos.xz + ${FOLIAGE_CONFIG.gen1.radius.toFixed(1)}) / GEN1_WIDTH) * GEN1_WIDTH;
     vec2 worldBladeXZ = instanceRootPos.xz + wrapOffset;
     float worldTerrainY = getTerrainHeightGLSL(worldBladeXZ);
     vec3 worldDelta = vec3(wrapOffset.x, worldTerrainY - instanceRootPos.y, wrapOffset.y);
 
     // 2. Soft Edge Distance Attenuation (shrinks to 0 height at boundary, eliminating pop-in)
     float distFromPlayer = length(worldBladeXZ - uPlayerPosition.xz);
-    float edgeFade = 1.0 - smoothstep(50.0, 60.0, distFromPlayer);
+    float edgeFade = 1.0 - smoothstep(${FOLIAGE_CONFIG.gen1.fadeStart.toFixed(1)}, ${FOLIAGE_CONFIG.gen1.fadeEnd.toFixed(1)}, distFromPlayer);
     transformed *= edgeFade;
 
     // Height factor along pole (0.0 at base root in soil, 1.0 at tip)
@@ -287,8 +325,6 @@ export function createGrass(scene, worldWind) {
   // ==========================================================================
   // Generation 2: Outer Field (40m < r <= 90m) - Rigid (No Bending)
   // ==========================================================================
-  const GEN2_RADIUS_OUTER = 90.0;
-  const GEN2_SPACING = 1.2;
 
   // Geometry: Same tapered triangular prism, optimized to 1 height segment (6 tris vs 18 tris)
   const poleGeoGen2 = new THREE.CylinderGeometry(
@@ -341,16 +377,16 @@ export function createGrass(scene, worldWind) {
       #endif
 
       // 1. Toroidal Wrap & Snapped Grid Tracking on GPU (0.00ms CPU overhead)
-      const float GEN2_WIDTH = ${(GEN2_RADIUS_OUTER * 2.0).toFixed(1)};
-      vec2 wrapOffset = floor((uPlayerPosition.xz - instanceRootPos.xz + ${GEN2_RADIUS_OUTER.toFixed(1)}) / GEN2_WIDTH) * GEN2_WIDTH;
+      const float GEN2_WIDTH = ${(FOLIAGE_CONFIG.gen2.radius * 2.0).toFixed(1)};
+      vec2 wrapOffset = floor((uPlayerPosition.xz - instanceRootPos.xz + ${FOLIAGE_CONFIG.gen2.radius.toFixed(1)}) / GEN2_WIDTH) * GEN2_WIDTH;
       vec2 worldBladeXZ = instanceRootPos.xz + wrapOffset;
       float worldTerrainY = getTerrainHeightGLSL(worldBladeXZ);
       vec3 worldDelta = vec3(wrapOffset.x, worldTerrainY - instanceRootPos.y, wrapOffset.y);
 
-      // 2. Soft Cross-Fade: inner blend with Gen 1 (50m to 60m), outer blend with Gen 3 (80m to 90m)
+      // 2. Soft Cross-Fade: inner blend with Gen 1, outer blend with Gen 3
       float distFromPlayer = length(worldBladeXZ - uPlayerPosition.xz);
-      float innerFade = smoothstep(50.0, 60.0, distFromPlayer);
-      float outerFade = 1.0 - smoothstep(80.0, 90.0, distFromPlayer);
+      float innerFade = smoothstep(${FOLIAGE_CONFIG.gen2.fadeInnerStart.toFixed(1)}, ${FOLIAGE_CONFIG.gen2.fadeInnerEnd.toFixed(1)}, distFromPlayer);
+      float outerFade = 1.0 - smoothstep(${FOLIAGE_CONFIG.gen2.fadeOuterStart.toFixed(1)}, ${FOLIAGE_CONFIG.gen2.fadeOuterEnd.toFixed(1)}, distFromPlayer);
       transformed *= (innerFade * outerFade);
 
       // Height factor along pole (0.0 at base, 1.0 at tip)
@@ -442,15 +478,15 @@ export function createGrass(scene, worldWind) {
         vec3 instanceRootPos = vec3(0.0);
       #endif
 
-      const float GEN2_WIDTH = ${(GEN2_RADIUS_OUTER * 2.0).toFixed(1)};
-      vec2 wrapOffset = floor((uPlayerPosition.xz - instanceRootPos.xz + ${GEN2_RADIUS_OUTER.toFixed(1)}) / GEN2_WIDTH) * GEN2_WIDTH;
+      const float GEN2_WIDTH = ${(FOLIAGE_CONFIG.gen2.radius * 2.0).toFixed(1)};
+      vec2 wrapOffset = floor((uPlayerPosition.xz - instanceRootPos.xz + ${FOLIAGE_CONFIG.gen2.radius.toFixed(1)}) / GEN2_WIDTH) * GEN2_WIDTH;
       vec2 worldBladeXZ = instanceRootPos.xz + wrapOffset;
       float worldTerrainY = getTerrainHeightGLSL(worldBladeXZ);
       vec3 worldDelta = vec3(wrapOffset.x, worldTerrainY - instanceRootPos.y, wrapOffset.y);
 
       float distFromPlayer = length(worldBladeXZ - uPlayerPosition.xz);
-      float innerFade = smoothstep(50.0, 60.0, distFromPlayer);
-      float outerFade = 1.0 - smoothstep(80.0, 90.0, distFromPlayer);
+      float innerFade = smoothstep(${FOLIAGE_CONFIG.gen2.fadeInnerStart.toFixed(1)}, ${FOLIAGE_CONFIG.gen2.fadeInnerEnd.toFixed(1)}, distFromPlayer);
+      float outerFade = 1.0 - smoothstep(${FOLIAGE_CONFIG.gen2.fadeOuterStart.toFixed(1)}, ${FOLIAGE_CONFIG.gen2.fadeOuterEnd.toFixed(1)}, distFromPlayer);
       transformed *= (innerFade * outerFade);
       `
     );
@@ -507,11 +543,9 @@ export function createGrass(scene, worldWind) {
   // ==========================================================================
   // Generation 3: Horizon Field (90m < r <= 160m) - Flat Triangle Tracking Perspective
   // ==========================================================================
-  const GEN3_RADIUS_OUTER = 180.0;
-  const GEN3_SPACING = 1.8;
 
   // Single flat 2D triangle geometry (1 triangle = 3 vertices) - enlarged for distant horizon visibility
-  const GEN3_WIDTH = 1.4;  // Expanded base width (1.40m)
+  const GEN3_WIDTH = 2.4;  // Expanded base width (1.40m)
   const GEN3_HEIGHT = 3.5; // Expanded height (3.50m)
   const TRI_BASE_HALF = GEN3_WIDTH * 0.5;
 
@@ -548,8 +582,8 @@ export function createGrass(scene, worldWind) {
   const gen3Uniforms = {
     uGen3PlayerPos: { value: new THREE.Vector3(0, 0, 0) },
     uGen3SouthDir: { value: new THREE.Vector2(0, -1).normalize() }, // Points North (-Z): North is factor 1, South is factor 0
-    uGen3ColorNorth: { value: new THREE.Color(0x42a03a) },          // Factor 1: Bright yellow-green (North)
-    uGen3ColorSouth: { value: new THREE.Color(0x00440e) }           // Factor 0: Deep meadow green (South)
+    uGen3ColorNorth: { value: new THREE.Color(0x338235) },          // Factor 1: Bright yellow-green (North)
+    uGen3ColorSouth: { value: new THREE.Color(0x165420) }           // Factor 0: Deep meadow green (South)
   };
 
   // Perspective Billboarding + Player Gradient (North 1 / South 0) + Wind Gust Highlight + GPU Tracking
@@ -587,16 +621,16 @@ export function createGrass(scene, worldWind) {
       #endif
 
       // 1. Toroidal Wrap & Snapped Grid Tracking on GPU (0.00ms CPU overhead)
-      const float GEN3_WIDTH = ${(GEN3_RADIUS_OUTER * 2.0).toFixed(1)};
-      vec2 wrapOffset = floor((uGen3PlayerPos.xz - instanceRootPos.xz + ${GEN3_RADIUS_OUTER.toFixed(1)}) / GEN3_WIDTH) * GEN3_WIDTH;
+      const float GEN3_WIDTH = ${(FOLIAGE_CONFIG.gen3.radius * 2.0).toFixed(1)};
+      vec2 wrapOffset = floor((uGen3PlayerPos.xz - instanceRootPos.xz + ${FOLIAGE_CONFIG.gen3.radius.toFixed(1)}) / GEN3_WIDTH) * GEN3_WIDTH;
       vec2 worldBladeXZ = instanceRootPos.xz + wrapOffset;
       float worldTerrainY = getTerrainHeightGLSL(worldBladeXZ);
       vec3 worldDelta = vec3(wrapOffset.x, worldTerrainY - instanceRootPos.y, wrapOffset.y);
 
-      // 2. Soft Cross-Fade: inner blend with Gen 2 (80m to 90m), outer blend into horizon fog (160m to 180m)
+      // 2. Soft Cross-Fade: inner blend with Gen 2, outer blend into horizon fog
       float distFromPlayer = length(worldBladeXZ - uGen3PlayerPos.xz);
-      float innerFade = smoothstep(80.0, 90.0, distFromPlayer);
-      float outerFade = 1.0 - smoothstep(160.0, 180.0, distFromPlayer);
+      float innerFade = smoothstep(${FOLIAGE_CONFIG.gen3.fadeInnerStart.toFixed(1)}, ${FOLIAGE_CONFIG.gen3.fadeInnerEnd.toFixed(1)}, distFromPlayer);
+      float outerFade = 1.0 - smoothstep(${FOLIAGE_CONFIG.gen3.fadeOuterStart.toFixed(1)}, ${FOLIAGE_CONFIG.gen3.fadeOuterEnd.toFixed(1)}, distFromPlayer);
       float fadeFactor = innerFade * outerFade;
 
       // 1. Perspective Billboard Tracking:
@@ -663,7 +697,7 @@ export function createGrass(scene, worldWind) {
       diffuseColor.rgb = gen3BaseColor;
 
       // Layer World Wind gust wave highlight on top
-      diffuseColor.rgb = mix(diffuseColor.rgb, uWorldWindGustColor, vPoleGustFactor * 0.05);
+      diffuseColor.rgb = mix(diffuseColor.rgb, uWorldWindGustColor, vPoleGustFactor * 0.1);
       `
     );
   };
@@ -737,6 +771,7 @@ export function createGrass(scene, worldWind) {
     countGen1: gen1Count,
     countGen2: gen2Count,
     countGen3: gen3Count,
-    count: gen1Count + gen2Count + gen3Count
+    count: gen1Count + gen2Count + gen3Count,
+    config: FOLIAGE_CONFIG
   };
 }
