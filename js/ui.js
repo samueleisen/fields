@@ -35,4 +35,13 @@ export function setupUI({ scene, horizonFog, terrainMaterial, resetCameraView })
       if (wireframeLabel) wireframeLabel.textContent = `Wireframe: ${wireframeActive ? 'On' : 'Off'}`;
     });
   }
+
+  // Press 'H' to toggle HUD visibility
+  window.addEventListener('keydown', (e) => {
+    // Avoid interfering if focus is in an input
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    if (e.key === 'h' || e.key === 'H') {
+      document.body.classList.toggle('show-hud');
+    }
+  });
 }

@@ -49,6 +49,30 @@ html, body {
 }
 
 /* ==========================================================================
+   HUD Visibility Rules: Hidden by default for full-screen immersion
+   ========================================================================== */
+.hud-top,
+.hud-card,
+.hud-bottom-dock,
+#telemetry-diagnostics-container,
+.diag-root {
+  display: none !important;
+}
+
+/* Optional: Press 'H' to reveal HUD if needed */
+body.show-hud .hud-top,
+body.show-hud .hud-bottom-dock {
+  display: flex !important;
+}
+body.show-hud .hud-card {
+  display: block !important;
+}
+body.show-hud #telemetry-diagnostics-container:not(.hidden),
+body.show-hud .diag-root:not(.hidden) {
+  display: block !important;
+}
+
+/* ==========================================================================
    Glassmorphism UI Overlay
    ========================================================================== */
 .hud-top {

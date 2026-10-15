@@ -32,7 +32,7 @@ export function createGrass(scene, worldWind) {
   // zone, creating an organic 15-meter interlocking blend zone [50m, 65m].
   const FOLIAGE_CONFIG = {
     gen1: {
-      radius: 65.0,                         // Extended reach (+5m offset past 60m)
+      radius: 250.0,                         // Extended reach (+5m offset past 60m)
       gridCount: 160,                       // 160 x 160 = 25,600 blades
       spacing: 0.815,          // 0.8125m (exact seamless periodic tile)
       fadeStart: 55.0,                      // Begins gentle fade out
@@ -328,7 +328,7 @@ export function createGrass(scene, worldWind) {
 
   // Geometry: Same tapered triangular prism, optimized to 1 height segment (6 tris vs 18 tris)
   const poleGeoGen2 = new THREE.CylinderGeometry(
-    POLE_RADIUS_TOP,
+    POLE_RADIUS_TOP - 0.05,
     POLE_RADIUS_BOTTOM,
     POLE_HEIGHT,
     3, // 3 radial segments

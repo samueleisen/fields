@@ -22,7 +22,7 @@ export function attachDiagnostics({ renderer, scene, hotkey = 'Backquote' }) {
   let frameCount = 0;
   let totalHitches = 0; // Frames taking > 16.67ms
   let isExpanded = true;
-  let isVisible = true;
+  let isVisible = false;
   let isDetached = false;
 
   // Cached scene stats (updated every 1 second to avoid per-frame traversal)
@@ -288,7 +288,7 @@ export function attachDiagnostics({ renderer, scene, hotkey = 'Backquote' }) {
   // --------------------------------------------------------------------------
   const rootEl = document.createElement('div');
   rootEl.id = 'telemetry-diagnostics-container';
-  rootEl.className = 'diag-root';
+  rootEl.className = 'diag-root hidden';
   rootEl.innerHTML = `
     <!-- Expanded Telemetry Panel -->
     <div id="diag-panel" class="diag-panel">
